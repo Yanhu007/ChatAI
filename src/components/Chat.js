@@ -250,26 +250,21 @@ ${webContents}
   };
 
   const renderMessageContent = (message) => {
-    if (message.role === 'assistant') {
-      return (
-        <ReactMarkdown 
-          remarkPlugins={[remarkGfm]}
-          components={{
-            // 自定义链接在新窗口打开
-            a: ({node, ...props}) => (
-              <a target="_blank" rel="noopener noreferrer" {...props} />
-            ),
-            // 自定义代码块样式
-            code: ({node, inline, ...props}) => (
-              <code className={inline ? 'inline-code' : 'code-block'} {...props} />
-            )
-          }}
-        >
-          {message.content}
-        </ReactMarkdown>
-      );
-    }
-    return message.content;
+    return (
+      <ReactMarkdown 
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({node, ...props}) => (
+            <a target="_blank" rel="noopener noreferrer" {...props} />
+          ),
+          code: ({node, inline, ...props}) => (
+            <code className={inline ? 'inline-code' : 'code-block'} {...props} />
+          )
+        }}
+      >
+        {message.content}
+      </ReactMarkdown>
+    );
   };
 
   return (
@@ -289,7 +284,9 @@ ${webContents}
           <div
             key={index}
             className={`message ${message.role === 'user' ? 'user' : 
-              message.role === 'system' ? 'system' : 'assistant'}`}
+              message.role === 'system' ? 'system' : 'assistant'} ${
+              message.isSearchResult ? 'search-result' : ''
+            }`}
           >
             <div className="message-content">
               {renderMessageContent(message)}
