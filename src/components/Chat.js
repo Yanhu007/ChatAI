@@ -411,7 +411,7 @@ ${webContents}
                 {renderMessageContent(message)}
               </div>
             </div>
-            {message.inputId && systemMessages[message.inputId] && (
+            {message.role === 'user' && message.inputId && systemMessages[message.inputId] && (
               <SystemMessageGroup 
                 messages={systemMessages[message.inputId]} 
                 inputId={message.inputId}
