@@ -29,6 +29,8 @@ const Chat = () => {
   });
   const messagesEndRef = useRef(null);
   const [useSearch, setUseSearch] = useState(false);
+  const [systemMessages, setSystemMessages] = useState({});
+  const [expandedGroup, setExpandedGroup] = useState(null);
 
   useEffect(() => {
     const savedSettings = JSON.parse(localStorage.getItem('chatSettings') || '{}');
@@ -48,11 +50,11 @@ const Chat = () => {
     scrollToBottom();
   }, [messages]);
 
-  const addSystemMessage = (content) => {
-    setMessages(prev => [...prev, {
-      role: 'system',
-      content: content
-    }]);
+  const addSystemMessage = (content, inputId) => {
+    setSystemMessages(prev => ({
+      ...prev,
+      [inputId]: [...(prev[inputId] || []), content]
+    }));
   };
 
   const searchBing = async (query) => {
@@ -64,7 +66,7 @@ const Chat = () => {
         query
       });
 
-      addSystemMessage('🔍 正在搜索相关网页...');
+      addSystemMessage('🔍 正在搜索相关网页...', Date.now());
       
       const fullUrl = `${settings.bingSearchUrl}?q=${encodeURIComponent(query)}`;
       console.log('Full request URL:', fullUrl);
@@ -126,20 +128,20 @@ const Chat = () => {
           keyPresent: !!settings.bingSearchKey
         }
       });
-      addSystemMessage('❌ 搜索失败：' + error.message);
+      addSystemMessage('❌ 搜索失败：' + error.message, Date.now());
       throw error;
     }
   };
 
   const fetchPageContent = async (url, index) => {
     try {
-      addSystemMessage(`📄 正在获取网页 ${index + 1} 的内容...`);
+      addSystemMessage(`📄 正在获取网页 ${index + 1} 的内容...`, Date.now());
       console.log(`Fetching content for URL ${index + 1}:`, url);
       
       const content = await ipcRenderer.invoke('fetch-page', url);
       
       console.log(`Received content length for URL ${index + 1}:`, content.length);
-      addSystemMessage(`✅ 已获取网页 ${index + 1} 的内容`);
+      addSystemMessage(`✅ 已获取网页 ${index + 1} 的内容`, Date.now());
       
       return content;
     } catch (error) {
@@ -148,7 +150,7 @@ const Chat = () => {
         error: error.message,
         stack: error.stack
       });
-      addSystemMessage(`❌ 获取网页 ${index + 1} 失败：${error.message}`);
+      addSystemMessage(`❌ 获取网页 ${index + 1} 失败：${error.message}`, Date.now());
       return `Failed to fetch content from ${url}`;
     }
   };
@@ -204,9 +206,12 @@ const Chat = () => {
     e.preventDefault();
     if (!input.trim() || isLoading || !settings.azureOpenAIUrl || !settings.azureOpenAIKey) return;
 
+    const inputId = Date.now();
+    
     const userMessage = {
       role: 'user',
-      content: input
+      content: input,
+      inputId
     };
 
     setMessages(prev => [...prev, userMessage]);
@@ -215,34 +220,48 @@ const Chat = () => {
 
     try {
       // 检查意图
+      addSystemMessage('🤔 正在分析您的意图...', inputId);
       const isHotelQuery = await checkIntent(input);
       
       if (isHotelQuery) {
-        // 如果是酒店查询意图，添加酒店卡片
+        addSystemMessage('✅ 检测到酒店查询意图', inputId);
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: '为您找到相关酒店信息：',
-          isHotelCard: true
+          isHotelCard: true,
+          inputId
         }]);
       } else {
-        // 原有的搜索和回答逻辑
         let prompt = input;
         let webContents = '';
 
         if (useSearch) {
           try {
-            const urls = await searchBing(input);
-            addSystemMessage('🔄 正在分析网页内容...');
+            // 保存所有搜索结果的 URL
+            let searchUrls = [];
             
+            // 搜索过程
+            addSystemMessage('🔍 开始搜索相关信息...', inputId);
+            const urls = await searchBing(input);
+            searchUrls = urls;
+            addSystemMessage(`✅ 找到 ${urls.length} 个相关网页`, inputId);
+            
+            // 获取每个网页的内容
+            addSystemMessage('📑 开始获取网页内容...', inputId);
             const contents = await Promise.all(
               urls.map((url, index) => fetchPageContent(url, index))
             );
+            
+            // 记录每个网页的内容长度
+            contents.forEach((content, index) => {
+              addSystemMessage(`📄 网页 ${index + 1} 内容长度: ${content.length} 字符`, inputId);
+            });
             
             webContents = contents.map((content, i) => 
               `来源 ${i + 1}: ${urls[i]}\n${content}\n`
             ).join('');
 
-            addSystemMessage('✅ 内容分析完成，正在生成总结...');
+            addSystemMessage('🔄 正在整理和分析内容...', inputId);
             
             prompt = `请根据以下信息生成一个结构化的总结：
 
@@ -260,11 +279,14 @@ ${webContents}
 6. 列表项之间不要有空行`;
           } catch (error) {
             console.error('Search process failed:', error);
-            addSystemMessage('❌ 搜索过程失败：' + error.message);
+            addSystemMessage('❌ 搜索过程失败：' + error.message, inputId);
             throw new Error('搜索过程失败');
           }
         }
 
+        // 调用 AI 之前
+        addSystemMessage('🤖 正在生成回答...', inputId);
+        
         const response = await fetch(`${settings.azureOpenAIUrl}`, {
           method: 'POST',
           headers: {
@@ -288,21 +310,29 @@ ${webContents}
           })
         });
 
-        if (!response.ok) throw new Error('API request failed');
+        if (!response.ok) {
+          addSystemMessage('❌ API 调用失败', inputId);
+          throw new Error('API request failed');
+        }
 
         const data = await response.json();
+        addSystemMessage('✅ 回答生成完成', inputId);
+        
         const assistantMessage = {
           role: 'assistant',
-          content: data.choices[0].message.content
+          content: data.choices[0].message.content,
+          inputId
         };
 
         setMessages(prev => [...prev, assistantMessage]);
       }
     } catch (error) {
       console.error('Error:', error);
+      addSystemMessage('❌ 发生错误：' + error.message, inputId);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: '抱歉，发生了错误。请稍后重试。'
+        content: '抱歉，发生了错误。请稍后重试。',
+        inputId
       }]);
     } finally {
       setIsLoading(false);
@@ -336,6 +366,31 @@ ${webContents}
     );
   };
 
+  const SystemMessageGroup = ({ messages, inputId }) => {
+    const isExpanded = expandedGroup === inputId;
+    
+    return (
+      <div className="system-message-group">
+        <div 
+          className={`system-message-header ${isExpanded ? 'expanded' : ''}`}
+          onClick={() => setExpandedGroup(isExpanded ? null : inputId)}
+        >
+          <span className="system-message-title">思考过程...</span>
+          <span className="system-message-arrow">{isExpanded ? '▼' : '▶'}</span>
+        </div>
+        {isExpanded && (
+          <div className="system-message-content">
+            {messages.map((msg, index) => (
+              <div key={index} className="system-message-item">
+                {msg}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="chat-container">
       <div className="chat-header">
@@ -350,17 +405,19 @@ ${webContents}
 
       <div className="messages">
         {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`message ${message.role === 'user' ? 'user' : 
-              message.role === 'system' ? 'system' : 'assistant'} ${
-              message.isSearchResult ? 'search-result' : ''
-            }`}
-          >
-            <div className="message-content">
-              {renderMessageContent(message)}
+          <React.Fragment key={index}>
+            <div className={`message ${message.role}`}>
+              <div className="message-content">
+                {renderMessageContent(message)}
+              </div>
             </div>
-          </div>
+            {message.inputId && systemMessages[message.inputId] && (
+              <SystemMessageGroup 
+                messages={systemMessages[message.inputId]} 
+                inputId={message.inputId}
+              />
+            )}
+          </React.Fragment>
         ))}
         {isLoading && (
           <div className="message assistant">
