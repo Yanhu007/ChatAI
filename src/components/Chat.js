@@ -153,6 +153,53 @@ const Chat = () => {
     }
   };
 
+  const checkIntent = async (input) => {
+    try {
+      const response = await fetch(`${settings.azureOpenAIUrl}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': settings.azureOpenAIKey
+        },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: 'system',
+              content: '你是一个意图识别专家。请判断用户输入是否是查询酒店的意图。只需要回复 "true" 或 "false"。'
+            },
+            {
+              role: 'user',
+              content: input
+            }
+          ],
+          max_tokens: 5,
+          temperature: 0.1
+        })
+      });
+
+      if (!response.ok) throw new Error('API request failed');
+      const data = await response.json();
+      return data.choices[0].message.content.toLowerCase().includes('true');
+    } catch (error) {
+      console.error('Intent check error:', error);
+      return false;
+    }
+  };
+
+  const renderHotelCard = () => {
+    return (
+      <div className="hotel-card">
+        <iframe
+          src="https://www.bing.com/travel/hotel-search?q=hotels+in+Shanghai%2C+China&displaytext=Shanghai%2C+China&cin=2025-02-12&cout=2025-02-17&form=HTFLLI&entrypoint=FBATIT"
+          width="100%"
+          height="600"
+          frameBorder="0"
+          allowFullScreen
+        />
+      </div>
+    );
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim() || isLoading || !settings.azureOpenAIUrl || !settings.azureOpenAIKey) return;
@@ -167,25 +214,37 @@ const Chat = () => {
     setIsLoading(true);
 
     try {
-      let prompt = input;
-      let webContents = '';
+      // 检查意图
+      const isHotelQuery = await checkIntent(input);
+      
+      if (isHotelQuery) {
+        // 如果是酒店查询意图，添加酒店卡片
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '为您找到相关酒店信息：',
+          isHotelCard: true
+        }]);
+      } else {
+        // 原有的搜索和回答逻辑
+        let prompt = input;
+        let webContents = '';
 
-      if (useSearch) {
-        try {
-          const urls = await searchBing(input);
-          addSystemMessage('🔄 正在分析网页内容...');
-          
-          const contents = await Promise.all(
-            urls.map((url, index) => fetchPageContent(url, index))
-          );
-          
-          webContents = contents.map((content, i) => 
-            `来源 ${i + 1}: ${urls[i]}\n${content}\n`
-          ).join('');
+        if (useSearch) {
+          try {
+            const urls = await searchBing(input);
+            addSystemMessage('🔄 正在分析网页内容...');
+            
+            const contents = await Promise.all(
+              urls.map((url, index) => fetchPageContent(url, index))
+            );
+            
+            webContents = contents.map((content, i) => 
+              `来源 ${i + 1}: ${urls[i]}\n${content}\n`
+            ).join('');
 
-          addSystemMessage('✅ 内容分析完成，正在生成总结...');
-          
-          prompt = `请根据以下信息生成一个结构化的总结：
+            addSystemMessage('✅ 内容分析完成，正在生成总结...');
+            
+            prompt = `请根据以下信息生成一个结构化的总结：
 
 搜索词：${input}
 
@@ -199,45 +258,46 @@ ${webContents}
 4. 突出关键信息
 5. 段落之间只使用单个换行符
 6. 列表项之间不要有空行`;
-        } catch (error) {
-          console.error('Search process failed:', error);
-          addSystemMessage('❌ 搜索过程失败：' + error.message);
-          throw new Error('搜索过程失败');
+          } catch (error) {
+            console.error('Search process failed:', error);
+            addSystemMessage('❌ 搜索过程失败：' + error.message);
+            throw new Error('搜索过程失败');
+          }
         }
+
+        const response = await fetch(`${settings.azureOpenAIUrl}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': settings.azureOpenAIKey
+          },
+          body: JSON.stringify({
+            messages: [
+              ...messages,
+              {
+                role: 'user',
+                content: prompt
+              }
+            ],
+            max_tokens: 1000,
+            temperature: 0.7,
+            frequency_penalty: 0,
+            presence_penalty: 0,
+            top_p: 0.95,
+            stop: null
+          })
+        });
+
+        if (!response.ok) throw new Error('API request failed');
+
+        const data = await response.json();
+        const assistantMessage = {
+          role: 'assistant',
+          content: data.choices[0].message.content
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
       }
-
-      const response = await fetch(`${settings.azureOpenAIUrl}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'api-key': settings.azureOpenAIKey
-        },
-        body: JSON.stringify({
-          messages: [
-            ...messages,
-            {
-              role: 'user',
-              content: prompt
-            }
-          ],
-          max_tokens: 1000,
-          temperature: 0.7,
-          frequency_penalty: 0,
-          presence_penalty: 0,
-          top_p: 0.95,
-          stop: null
-        })
-      });
-
-      if (!response.ok) throw new Error('API request failed');
-
-      const data = await response.json();
-      const assistantMessage = {
-        role: 'assistant',
-        content: data.choices[0].message.content
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
     } catch (error) {
       console.error('Error:', error);
       setMessages(prev => [...prev, {
@@ -250,6 +310,15 @@ ${webContents}
   };
 
   const renderMessageContent = (message) => {
+    if (message.isHotelCard) {
+      return (
+        <>
+          {message.content}
+          {renderHotelCard()}
+        </>
+      );
+    }
+    
     return (
       <ReactMarkdown 
         remarkPlugins={[remarkGfm]}
