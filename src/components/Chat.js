@@ -3,6 +3,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Settings from './Settings';
 import './Chat.css';
+import { INTENTS, checkIntent } from '../utils/intent';
+import HotelCard from './HotelCard';
+import parseHotelRequest from '../utils/hotel';
 
 // 添加错误处理
 const electron = window.electron || {
@@ -155,53 +158,6 @@ const Chat = () => {
     }
   };
 
-  const checkIntent = async (input) => {
-    try {
-      const response = await fetch(`${settings.azureOpenAIUrl}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'api-key': settings.azureOpenAIKey
-        },
-        body: JSON.stringify({
-          messages: [
-            {
-              role: 'system',
-              content: '你是一个意图识别专家。请判断用户输入是否是查询酒店的意图。只需要回复 "true" 或 "false"。'
-            },
-            {
-              role: 'user',
-              content: input
-            }
-          ],
-          max_tokens: 5,
-          temperature: 0.1
-        })
-      });
-
-      if (!response.ok) throw new Error('API request failed');
-      const data = await response.json();
-      return data.choices[0].message.content.toLowerCase().includes('true');
-    } catch (error) {
-      console.error('Intent check error:', error);
-      return false;
-    }
-  };
-
-  const renderHotelCard = () => {
-    return (
-      <div className="hotel-card">
-        <iframe
-          src="https://www.bing.com/travel/hotel-search?q=hotels+in+Shanghai%2C+China&displaytext=Shanghai%2C+China&cin=2025-02-12&cout=2025-02-17&form=HTFLLI&entrypoint=FBATIT"
-          width="100%"
-          height="600"
-          frameBorder="0"
-          allowFullScreen
-        />
-      </div>
-    );
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim() || isLoading || !settings.azureOpenAIUrl || !settings.azureOpenAIKey) return;
@@ -221,14 +177,31 @@ const Chat = () => {
     try {
       // 检查意图
       addSystemMessage('🤔 正在分析您的意图...', inputId);
-      const isHotelQuery = await checkIntent(input);
+      const intentResult = await checkIntent(input, settings);
       
-      if (isHotelQuery) {
+      if (intentResult === INTENTS.HOTEL_QUERY) {
         addSystemMessage('✅ 检测到酒店查询意图', inputId);
+        
+        // 解析酒店预订信息
+        addSystemMessage('🔍 正在分析预订需求...', inputId);
+        const hotelInfo = await parseHotelRequest(input, settings);
+        
+        // 构建 Bing 酒店搜索 URL
+        const searchUrl = new URL('https://www.bing.com/travel/hotel-search');
+        searchUrl.searchParams.set('loc', hotelInfo.location_preference || 'Shanghai, China');
+        searchUrl.searchParams.set('cin', hotelInfo.check_in_date || '');
+        searchUrl.searchParams.set('cout', hotelInfo.check_out_date || '');
+        searchUrl.searchParams.set('displaytext', hotelInfo.location_preference || 'Shanghai, China');
+        searchUrl.searchParams.set('type', 'hotel');
+        
+        addSystemMessage('✅ 已生成搜索链接', inputId);
+
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: '为您找到相关酒店信息：',
           isHotelCard: true,
+          hotelSearchUrl: searchUrl.toString(),
+          hotelInfo: hotelInfo, // 保存解析结果以供显示
           inputId
         }]);
       } else {
@@ -344,7 +317,7 @@ ${webContents}
       return (
         <>
           {message.content}
-          {renderHotelCard()}
+          <HotelCard searchUrl={message.hotelSearchUrl} hotelInfo={message.hotelInfo} />
         </>
       );
     }
@@ -391,10 +364,25 @@ ${webContents}
     );
   };
 
+  const startNewChat = () => {
+    setMessages([]);
+    setSystemMessages({});
+    setInput('');
+    setExpandedGroup(null);
+  };
+
   return (
     <div className="chat-container">
       <div className="chat-header">
-        <h1>Chat</h1>
+        <div className="header-left">
+          <h1>Chat</h1>
+          <button 
+            className="new-chat-button"
+            onClick={startNewChat}
+          >
+            + 新对话
+          </button>
+        </div>
         <button 
           className="settings-button"
           onClick={() => setShowSettings(true)}
